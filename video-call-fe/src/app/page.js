@@ -1,21 +1,29 @@
 "use client";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import Peer from "peerjs";
-import io, { Socket } from "socket.io-client";
+import io from "socket.io-client";
 
 const VideoChat = () => {
   const [peerId, setPeerId] = useState(null);
   const [localStream, setLocalStream] = useState(null);
-  const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const socketRef = useRef(null);
-  const peerRef = useRef(null);
+  const [socket, setSocket] = useState(null);
+  const [peer, setPeer] = useState(null);
+  const [remotePeerId, setRemotePeerId] = useState("");
+  const [remoteStream, setRemoteStream] = useState(null);
 
   useEffect(() => {
-    // Initialize PeerJS
-    peerRef.current = new Peer();
-    peerRef.current.on("open", (id) => {
+    const newPeer = new Peer();
+    setPeer(newPeer);
+
+    newPeer.on("open", (id) => {
       setPeerId(id);
+    });
+
+    newPeer.on("call", (call) => {
+      call.answer(localStream);
+      call.on("stream", (remoteStream) => {
+        setRemoteStream(remoteStream);
+      });
     });
 
     const newSocket = io("https://172.20.20.25:8000/", {
@@ -25,46 +33,35 @@ const VideoChat = () => {
       reconnectionAttempts: 5,
     });
 
+    setSocket(newSocket);
+
     newSocket.on("connect", () => {
       console.log("Connected via WebSocket");
+      newSocket.emit("register", newPeer.id);
     });
 
-    // Socket.IO event listeners
-    // socketRef.current.on("call-made", (data) => {
-    //   if (localStream) {
-    //     const call = peerRef.current.call(data.callerID, localStream);
-    //     call.on("stream", (remoteStream) => {
-    //       remoteVideoRef.current.srcObject = remoteStream;
-    //     });
-    //   }
-    // });
+    newSocket.on("new-call", (data) => {
+      const call = newPeer.call(data.callerId, localStream);
+      call.on("stream", (remoteStream) => {
+        setRemoteStream(remoteStream);
+      });
+    });
 
-    // socketRef.current.on("answer-made", (data) => {
-    //   if (localStream) {
-    //     const call = peerRef.current.call(data.calleeID, localStream);
-    //     call.on("stream", (remoteStream) => {
-    //       remoteVideoRef.current.srcObject = remoteStream;
-    //     });
-    //   }
-    // });
+    newSocket.on("call-answered", (data) => {
+      const call = newPeer.call(data.callerId, localStream);
+      call.on("stream", (remoteStream) => {
+        setRemoteStream(remoteStream);
+      });
+    });
 
-    // socketRef.current.on("call-rejected", () => {
-    //   console.log("Call rejected");
-    // });
+    newSocket.on("call-rejected", () => {
+      console.log("Call rejected");
+    });
 
-    // socketRef.current.on("user-connected", (userID) => {
-    //   console.log(`User connected: ${userID}`);
-    // });
-
-    // socketRef.current.on("user-disconnected", (userID) => {
-    //   console.log(`User disconnected: ${userID}`);
-    // });
-
-    // // Cleanup on component unmount
-    // return () => {
-    //   peerRef.current?.destroy();
-    //   socketRef.current?.disconnect();
-    // };
+    return () => {
+      newPeer?.destroy();
+      newSocket?.disconnect();
+    };
   }, [localStream]);
 
   useEffect(() => {
@@ -74,7 +71,6 @@ const VideoChat = () => {
           video: true,
           audio: true,
         });
-        localVideoRef.current.srcObject = stream;
         setLocalStream(stream);
       } catch (error) {
         console.error("Error accessing media devices.", error);
@@ -85,66 +81,93 @@ const VideoChat = () => {
   }, []);
 
   const handleCall = () => {
-    const remotePeerID = prompt("Enter ID of remote peer:");
-    if (remotePeerID && localStream) {
-      const call = peerRef.current.call(remotePeerID, localStream);
+    console.log("call please");
+
+    if (remotePeerId && localStream) {
+      const call = peer.call(remotePeerId, localStream);
       call.on("stream", (remoteStream) => {
-        remoteVideoRef.current.srcObject = remoteStream;
+        setRemoteStream(remoteStream);
+      });
+
+      // Emit the call event to the backend
+      socket.emit("make-call", {
+        callerId: peerId,
+        receiverId: remotePeerId,
+        offer: call.peerConnection.localDescription,
       });
     }
   };
 
   const handleHangup = () => {
-    if (peerRef.current) {
-      peerRef.current.disconnect();
+    if (peer) {
+      peer.disconnect();
     }
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
+    setRemoteStream(null);
   };
 
   return (
-    <div className="container mx-auto px-4 mt-8">
-      <h1 className="text-center text-3xl font-bold mb-4">Video Chat</h1>
-      <div className="text-center mb-4">
-        <div id="myId" className="text-lg font-semibold">
+    <div className="container">
+      <h1 className="title">Video Chat</h1>
+
+      {/* Peer ID and input */}
+      <div className="input-section">
+        <div id="myId" className="peer-id">
           {peerId ? `My ID: ${peerId}` : "Loading ID..."}
         </div>
+        <input
+          type="text"
+          placeholder="Enter remote peer ID"
+          className="input"
+          value={remotePeerId}
+          onChange={(e) => setRemotePeerId(e.target.value)}
+        />
       </div>
 
-      <div className="flex flex-wrap justify-center gap-4 mb-4">
-        <div className="w-full sm:w-1/2 p-2">
-          <h2 className="text-xl font-semibold mb-2">Your Video</h2>
+      {/* Video sections side by side */}
+      <div className="video-container">
+        {/* Your Video */}
+        <div className="video-section">
+          <h2 className="video-title">Your Video</h2>
           <video
-            ref={localVideoRef}
+            ref={(video) => {
+              if (video && localStream) {
+                video.srcObject = localStream;
+              }
+            }}
             autoPlay
             playsInline
-            className="w-full h-full border-2 border-gray-300 rounded"
+            className="video-element"
           ></video>
         </div>
 
-        <div className="w-full sm:w-1/2 p-2">
-          <h2 className="text-xl font-semibold mb-2">Remote Video</h2>
+        {/* Remote Video */}
+        <div className="video-section">
+          <h2 className="video-title">Remote Video</h2>
           <video
-            ref={remoteVideoRef}
+            ref={(video) => {
+              if (video && remoteStream) {
+                video.srcObject = remoteStream;
+              }
+            }}
             autoPlay
             playsInline
-            className="w-full h-full border-2 border-gray-300 rounded"
+            className="video-element"
           ></video>
         </div>
       </div>
 
-      <div className="text-center">
+      {/* Call and Hang Up buttons */}
+      <div className="button-container">
         <button
           id="callButton"
-          className="bg-green-500 text-white px-4 py-2 rounded mr-2 hover:bg-green-600"
+          className="button call-button"
           onClick={handleCall}
         >
           Call
         </button>
         <button
           id="hangupButton"
-          className="bg-red-500 text-white px-4 py-2 rounded ml-2 hover:bg-red-600"
+          className="button hangup-button"
           onClick={handleHangup}
         >
           Hang Up
